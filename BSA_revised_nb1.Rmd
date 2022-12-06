@@ -1,0 +1,111 @@
+---
+title: "BSA Revised"
+author: "BOARDSOURCE"
+date: "`r Sys.Date()`"
+output: 
+  html_document: 
+    df_print: paged
+    highlight: tango
+    theme: flatly
+---
+
+```{r libraries, include=FALSE}
+library(rio)
+library(tidyverse)
+library(sjlabelled)
+library(data.table)
+
+```
+
+
+```{r import and basic summary}
+##Import Dataset. 
+revised_BSA <- import("revised_BSA.rds")
+
+questions_rBSA<- data.frame((names(revised_BSA)), get_label(revised_BSA))
+questions_rBSA$no. <- 1:nrow(questions_rBSA)
+
+
+table(revised_BSA$Role) ##CEOs are either "CEO", "Chief Executive Officer" or "Executive Director". Everyone else is a board member. [1172 ceos of 22059 participants]
+
+##Convert duration to minutes
+revised_BSA <- revised_BSA%>%
+  mutate(Duration_minutes = (revised_BSA$`Duration (in seconds)` / 60))
+
+
+table(revised_BSA$Year, exclude=F)
+
+##Participants with 2023 dates took the survey in November and have a future 'report-date'. 
+unknown.future<-revised_BSA%>%
+  filter(Year == 2023 | is.na(Year)) ##It looks like orgs without a year are surveys imported from the older system and Qualtrics doesn't have a year for them. Can be extracted from the last 4 digits from the survey name. 
+
+revised_BSA2 <- revised_BSA
+# %>%
+#   mutate(survey_year = case_when(
+#     is.na(revised_BSA$Year) ~ 2025,
+#     revised_BSA$Year == 2023 ~ 2022,
+#     TRUE ~ revised_BSA$Year)
+#     )
+
+
+revised_BSA2$tempyear <- str_sub(revised_BSA$ImportedFromSurveyName, -4,-1)
+revised_BSA2$tempyear <- as.numeric(revised_BSA2$tempyear)  ##Some NAs introduced here because of character values. Will check for these later. 
+
+revised_BSA2$survey_year <- revised_BSA2$Year
+
+##make a temporary variable to indicate whether year is missing. create a conditional to fill in values when year is missing. 
+revised_BSA2 <- revised_BSA2%>%
+  mutate(year_missing = case_when(
+    is.na(survey_year) ~ 1,
+    TRUE ~ 0
+  ))
+
+revised_BSA2%>%
+  filter(is.na(survey_year))%>%
+  select(survey_year, tempyear, year_missing, survey_year2)
+
+revised_BSA2$survey_year2 <- 9999
+
+revised_BSA2$survey_year2 <- fifelse(revised_BSA2$year_missing == 1, revised_BSA2$tempyear, revised_BSA2$survey_year, na = NA)
+##Appears to work well. Will have to check for observations with missing temp-year values from before. 
+
+##Checking for observations with missing temp-year variables. 
+revised_BSA2%>%
+  filter(is.na(tempyear))%>%
+  select(tempyear, survey_year, survey_year2, ImportedFromSurveyName)  ##If temp-year is missing, survey-year2 has been assigned from original year values in all cases. 
+
+##Assign those with year 2023 to year 2022. 
+revised_BSA2 <-  revised_BSA2%>%
+  mutate(survey_year3 = case_when(
+    survey_year2 == 2023 ~ 2022,
+    TRUE ~ survey_year2)
+  )
+
+##check new year variable. 
+table(revised_BSA2$survey_year3, exclude = F)
+
+##How many organizations in the survey?
+
+##26 respondents without an organization. 
+revised_BSA%>%
+  count(is.na(Org_Name))
+
+# noorg <- revised_BSA%>%
+#   filter(is.na(Org_Name)) ##These are people who previewed the survey and not associated with any organization. 
+
+##Exclude preview responses. 
+# table(revised_BSA$DistributionChannel)
+revised_BSA<- revised_BSA%>%
+  filter(!DistributionChannel == "preview")
+
+
+n_distinct(revised_BSA$Org_Name) ##Number of organization that took the revised BSA. (Preliminary)
+
+revised_BSA%>%
+  group_by(Org_Name)%>%
+  summarise(year1 = min(Year),
+            last_year = max(Year))
+  
+
+```
+
