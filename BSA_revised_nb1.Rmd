@@ -14,7 +14,12 @@ library(rio)
 library(tidyverse)
 library(sjlabelled)
 library(data.table)
+library(usethis)
+library(gtsummary)
+library(maps)
+library(rgeolocate)
 
+#use_github(protocol = "https", auth_token = Sys.getenv("GITHUB_PAT"))
 ```
 
 
@@ -22,22 +27,27 @@ library(data.table)
 ##Import Dataset. 
 revised_BSA <- import("revised_BSA.rds")
 
+##Exclude preview responses. 
+# table(revised_BSA$DistributionChannel)
+revised_BSA<- revised_BSA%>%
+  filter(!DistributionChannel == "preview")
+
 questions_rBSA<- data.frame((names(revised_BSA)), get_label(revised_BSA))
 questions_rBSA$no. <- 1:nrow(questions_rBSA)
 
 
-table(revised_BSA$Role) ##CEOs are either "CEO", "Chief Executive Officer" or "Executive Director". Everyone else is a board member. [1172 ceos of 22059 participants]
+# table(revised_BSA$Role) ##CEOs are either "CEO", "Chief Executive Officer" or "Executive Director". Everyone else is a board member. [1172 ceos of 22059 participants]
+# 
+# ##Convert duration to minutes
+# revised_BSA <- revised_BSA%>%
+#   mutate(Duration_minutes = (revised_BSA$`Duration (in seconds)` / 60))
 
-##Convert duration to minutes
-revised_BSA <- revised_BSA%>%
-  mutate(Duration_minutes = (revised_BSA$`Duration (in seconds)` / 60))
 
-
-table(revised_BSA$Year, exclude=F)
+# table(revised_BSA$Year, exclude=F)
 
 ##Participants with 2023 dates took the survey in November and have a future 'report-date'. 
-unknown.future<-revised_BSA%>%
-  filter(Year == 2023 | is.na(Year)) ##It looks like orgs without a year are surveys imported from the older system and Qualtrics doesn't have a year for them. Can be extracted from the last 4 digits from the survey name. 
+# unknown.future<-revised_BSA%>%
+#   filter(Year == 2023 | is.na(Year)) ##It looks like orgs without a year are surveys imported from the older system and Qualtrics doesn't have a year for them. Can be extracted from the last 4 digits from the survey name. 
 
 revised_BSA2 <- revised_BSA
 # %>%
@@ -60,19 +70,20 @@ revised_BSA2 <- revised_BSA2%>%
     TRUE ~ 0
   ))
 
-revised_BSA2%>%
-  filter(is.na(survey_year))%>%
-  select(survey_year, tempyear, year_missing, survey_year2)
-
 revised_BSA2$survey_year2 <- 9999
+
+# revised_BSA2%>%
+#   filter(is.na(survey_year))%>%
+#   select(survey_year, tempyear, year_missing, survey_year2)
+
 
 revised_BSA2$survey_year2 <- fifelse(revised_BSA2$year_missing == 1, revised_BSA2$tempyear, revised_BSA2$survey_year, na = NA)
 ##Appears to work well. Will have to check for observations with missing temp-year values from before. 
 
 ##Checking for observations with missing temp-year variables. 
-revised_BSA2%>%
-  filter(is.na(tempyear))%>%
-  select(tempyear, survey_year, survey_year2, ImportedFromSurveyName)  ##If temp-year is missing, survey-year2 has been assigned from original year values in all cases. 
+# revised_BSA2%>%
+#   filter(is.na(tempyear))%>%
+#   select(tempyear, survey_year, survey_year2, ImportedFromSurveyName)  ##If temp-year is missing, survey-year2 has been assigned from original year values in all cases. 
 
 ##Assign those with year 2023 to year 2022. 
 revised_BSA2 <-  revised_BSA2%>%
@@ -86,26 +97,360 @@ table(revised_BSA2$survey_year3, exclude = F)
 
 ##How many organizations in the survey?
 
-##26 respondents without an organization. 
-revised_BSA%>%
-  count(is.na(Org_Name))
+n_distinct(revised_BSA$Org_Name) ##Number of organization that took the revised BSA. (Preliminary) 1248 orgs took survey. 
 
-# noorg <- revised_BSA%>%
-#   filter(is.na(Org_Name)) ##These are people who previewed the survey and not associated with any organization. 
-
-##Exclude preview responses. 
-# table(revised_BSA$DistributionChannel)
-revised_BSA<- revised_BSA%>%
-  filter(!DistributionChannel == "preview")
-
-
-n_distinct(revised_BSA$Org_Name) ##Number of organization that took the revised BSA. (Preliminary)
-
-revised_BSA%>%
-  group_by(Org_Name)%>%
-  summarise(year1 = min(Year),
-            last_year = max(Year))
+# revised_BSA%>%
+#   group_by(Org_Name)%>%
+#   summarise(year1 = min(Year),
+#             last_year = max(Year))
   
+```
+
+
+```{r Organization demo}
+##Group by org, keep last response per organization. 
+#
+#How many organizations(1248, see above.)
+##How many orgs took the survey multiple times? 121 orgs took the BSA more than once between 2018 and now.  
+revised_BSA2 %>%
+  group_by(Org_Name)%>%
+  arrange(Org_Name)%>%
+  distinct(survey_year3)%>%
+  count(n())%>%
+  filter(n>1)
+
+##Keep last response per org. [Survey responses from the last year kept.] 
+oneresp_revisedBSA <- revised_BSA2 %>%
+  group_by(Org_Name)%>%
+  slice_max(survey_year3)%>%
+  ungroup()
+
+##Create a new chiefexec variable to indicate CEOs identified under multiple titles. 
+oneresp_revisedBSA <- oneresp_revisedBSA%>%
+  mutate(chiefexec = case_when(
+    Role == 'Executive Director' ~ 1, 
+    Role == 'Chief Executive Officer' ~ 1, 
+    Role == 'CEO' ~ 1, 
+    TRUE ~ 0
+  ))
+
+table(oneresp_revisedBSA$chiefexec) ##1032 CEOs 
+# table(oneresp_revisedBSA$Role)
+
+##Restrict one response year dataset to only CEOs. 
+ceo_oneresprBSA <- oneresp_revisedBSA%>%
+  filter(chiefexec == 1)
+
+# with(data = ceo_oneresprBSA, {
+#       print (table(ceo_oneresprBSA$CLP_G.9, exclude = F)) 
+#        print (table(ceo_oneresprBSA$CLP_G.10, exclude = F)) 
+#        print (table(ceo_oneresprBSA$CLP_G.13, exclude = F)) 
+#        print (summary(ceo_oneresprBSA$CLP_G.15))
+#        summary(ceo_oneresprBSA$CLP_G.14)
+# 
+# })
+
+ceo_oneresprBSA$CLP_G.10 <- as.factor(ceo_oneresprBSA$CLP_G.10)
+
+ceo_oneresprBSA <- ceo_oneresprBSA %>%
+  dplyr::mutate(CLP_G.14 = na_if(CLP_G.14, 100))%>%
+  dplyr::mutate(CLP_G.14 = na_if(CLP_G.14, 2009))%>%
+  dplyr::mutate(CLP_G.14 = na_if(CLP_G.14, 4040))
+
+
+table1 <- ceo_oneresprBSA %>%
+  select(CLP_G.9, CLP_G.10, CLP_G.13, CLP_G.14, CLP_G.15)%>%
+  tbl_summary(
+  statistic = list(all_continuous() ~ "{median} {mean} ({sd})",
+                     all_categorical() ~ "{n} ({p}%)"),
+    digits = all_continuous() ~ 2, 
+  missing_text = "Missing")
+
+table1
+
+
+##Exclude federated organizations in assessing budget. 
+table(ceo_oneresprBSA$CLP_G.17)  # [1= no, 2=yes] ##615 non-federated orgs. 
+
+budget_groups <- ceo_oneresprBSA%>%
+  filter(CLP_G.17==1)%>%
+  count(CLP_G.13) 
+
+budget_groups$percent <- budget_groups$n / sum(budget_groups$n) *100
+# sum(budget_groups$n)
+budget_groups
+##It is still the case that about 15% of orgs are in the 25 million plus category.  
+
+# summary(ceo_oneresprBSA$CLP_G.15)
+# summary(ceo_oneresprBSA$CLP_G.14) ##Someone reports 4040 years at ceo. 
+
+# ceo_oneresprBSA%>%
+#   filter(CLP_G.14 > 10)%>%
+#   arrange(desc(CLP_G.14))%>%
+#   select(IPAddress, CLP_G.14, Org_Name)  ##Exclude tenures over 43 years. (responses include 100, 2009 and 4040)
+
+
+##Checking for organizations providing specialized services (hospitals, universities, schools, etc) that we may want to exclude. Looking at orgs in the education or healthcare sectors. 
+ceo_oneresprBSA %>%
+  filter(CLP_G.10 == 4 | CLP_G.10 == 6)%>%
+  select(Org_Name, CLP_G.13, CLP_G.10)%>%
+  arrange(desc(CLP_G.13))  ##254 orgs in this category. 
+
+##perhaps restrict to public charities only. 
+ceo_oneresprBSA %>%
+  filter(CLP_G.9 == 1)%>%
+  filter(CLP_G.10 == 4 | CLP_G.10 == 6)%>%
+  select(Org_Name, CLP_G.13, CLP_G.10)%>%
+  arrange(desc(CLP_G.13))
+
+# table(ceo_oneresprBSA$`NTEE CORE CODE 1`, exclude = F)
+# table(ceo_oneresprBSA$`NTEE CORE CODE 2`, exclude = F)
+# table(ceo_oneresprBSA$`NTEE CORE CODE 3`, exclude = F)
+
+ceo_oneresprBSA%>%
+  filter(is.na(`NTEE CORE CODE 1`) & is.na(`NTEE CORE CODE 2`) & is.na(`NTEE CORE CODE 3`))%>%
+  select(Org_Name)
+##647 out of 1032 have missing ntee codes in all 3 cases. 
+
+##How many orgs provide their EIN?
+sum(is.na(ceo_oneresprBSA$CLP_G.19))  ##2 missing EINs. 
+
+##39 orgs provided 0 as their EIN. In total, 41 missing EINs.
+ceo_oneresprBSA%>%                   
+  filter(CLP_G.19 == 0)%>%
+  count(n())
+  
+sum(!is.na(ceo_oneresprBSA$CLP_G.19) & ceo_oneresprBSA$CLP_G.19 != 0) ##991 available. 
+```
+
+```{r geographic location}
+##Location of CEOs when they took the survey. Limited to CEOs only. 
+
+usa <- map_data("usa")
+
+location <- ip2location(
+  ceo_oneresprBSA$IPAddress,
+  file <- ("C:\\Users/mikyas.duga/OneDrive - BoardSource/Documents/R Data Resources/IP2location/IP2LOCATION-LITE-DB5.IPV6.BIN/IP2LOCATION-LITE-DB5.IPV6.BIN"),
+  fields = c("country_name", "lat", "long", "region", "city")
+)
+
+##limit to only us based takers. Exclude several respondents based in Alaska and Hawaii.
+location2 <- location%>%
+  filter(country_name == "United States of America")%>%
+  filter(region != "Hawaii" & region!="Alaska")
+
+
+gg1 <- ggplot()+
+  geom_polygon(data = usa, aes(x=long, y = lat, group = group), fill = NA, color = "red") + 
+  geom_point(data = location2, aes(x=long, y =lat), color = "black") +
+  coord_fixed(1.3) +
+theme_minimal()
+gg1 + theme(axis.line = element_line(size = 2.8),
+    axis.text = element_text(size = 8), panel.background = element_rect(fill = "aliceblue"),
+    plot.background = element_rect(fill = "aliceblue")) +labs(title = "CEO Location at Response Time")
+
+table_location <- as.data.frame(table(location2$region))
+table_location %>%
+  arrange(desc(Freq))%>%
+  mutate(percent = Freq / sum(Freq) * 100)
+```
+
+
+```{r import irs BMF files}
+##Import and bind IRS BMF files. 
+# IRS_bmf <- list.files(pattern = "*.csv")%>%
+#   map_df(~read.csv(.))
+
+##rename EIN variable in IRS BMF to match variable name in BSA file. 
+# IRS_bmf <- IRS_bmf%>%
+#   rename(CLP_G.19 = "EIN")
+
+
+##Merge by EIN. 
+# ceo_oneresp2 <- left_join(ceo_oneresprBSA, IRS_bmf, by = "CLP_G.19")
+# saveRDS(ceo_oneresp2, "ceo_oneresp2.rds")
+ceo_oneresp2<- import("ceo_oneresp2.rds")
+
+##how many have columns added by ein matching?
+sum(is.na(ceo_oneresp2$NAME)) # 140 missing
+sum(is.na(ceo_oneresp2$ASSET_AMT)) ##170 missing. 
+
+##How many NTEE codes available?
+sum(is.na(ceo_oneresp2$NTEE_CD)) #140 missing. 
+
+##Import NTEE codes to be excluded
+exclusion_NTEE_codes <- readxl::read_excel("~/R Data Resources/exclusion NTEE codes.xlsx")
+
+exclusion_NTEE_codes <- separate(exclusion_NTEE_codes, 
+         "Exclusion Codes", 
+         into = c("NTEE_CD", "Description"), remove = F) 
+exclusion_NTEE_codes
+
+
+excluded_orgs <- ceo_oneresp2%>%
+  filter(NTEE_CD %in% exclusion_NTEE_codes$NTEE_CD)
+
+excluded_orgs%>%select(Org_Name, NTEE_CD, CLP_G.10, CLP_G.13)
+##Does not seem to do a very good job of excluding hospitals, medical groups, etc. 
+
+##Convert all org names to upper case. 
+ceo_oneresp2$Org_Name <- toupper(ceo_oneresp2$Org_Name)
+
+##Identify and exclude hospitals, schools and churches with missing NTEE codes
+temp112 <- ceo_oneresp2%>%
+  filter((str_detect(ceo_oneresp2$Org_Name, "HOSPITAL|MEDICAL|HIGH SCHOOL |CHURCH|TEMPLE") == T) & is.na(NTEE_CD))
+
+##Identified another 6 orgs to be added to excluded orgs list.
+excluded_orgs <- rbind(excluded_orgs, temp112)
+excluded_orgs$Org_Name <- toupper(excluded_orgs$Org_Name)
+
+##Exclude the 48 organizations. 
+ceo_oneresp_included <- anti_join(ceo_oneresp2, excluded_orgs, by = "Org_Name")
+
+table(ceo_oneresp_included$CLP_G.13, exclude = F)
+
+##Table excluding federated orgs. 
+budget_groups2 <- ceo_oneresp_included%>%
+  filter(CLP_G.17==1)%>%
+  count(CLP_G.13) 
+
+budget_groups2$percent <- budget_groups2$n / sum(budget_groups2$n) *100
+# sum(budget_groups$n)
+budget_groups2
 
 ```
+
+```{r composite scores}
+##Create composite performance variables. 
+revised_BSA3 <- revised_BSA2%>%
+  mutate(MI_ST_composite = rowMeans(select(revised_BSA2, W.1:W.10), na.rm = T),
+         PI_fund_composite = rowMeans(select(revised_BSA2,W.33:W.42), na.rm = T),
+         BC_composite = rowMeans(select(revised_BSA2, P.1:P.8), na.rm = T),
+         PO_composite = rowMeans(select(revised_BSA2,W.11:W.15), na.rm = T),
+         Finov_composite = rowMeans(select(revised_BSA2,W.16:W.23), na.rm = T),
+         CEOov_composite = rowMeans(select(revised_BSA2,W.24:W.32), na.rm = T),
+         Brdstr_composite = rowMeans(select(revised_BSA2,P.9:P.15), na.rm = T),
+         Meet_composite = rowMeans(select(revised_BSA2,P.16:P.21), na.rm = T),
+         Culture_composite = rowMeans(select(revised_BSA2,C.1:C.10 ), na.rm = T),
+         Impact_composite = rowMeans(select(revised_BSA2, I.1:I.4), na.rm = T))
+
+##Reduce dataset to identifying and performance variables. 
+performance_rBSA <- revised_BSA3%>%
+  select(IPAddress, Org_Name, survey_year3, MI_ST_composite:Impact_composite, CLP_G.9:CLP_G.17)
+
+performance_rBSA$Org_Name <- toupper(performance_rBSA$Org_Name)
+
+##Create average responses by organization for a given year. Note: A single organization can provide answers for multiple years. 
+per_by_year <- performance_rBSA %>%
+  group_by(Org_Name, survey_year3)
+
+
+
+df_group_summary <- summarise(per_by_year, 
+                              count = n(), 
+                              mean_mi_st = mean(MI_ST_composite, na.rm = T), 
+                              mean_pi_fund = mean(PI_fund_composite, na.rm = T), 
+                              mean_BC = mean(BC_composite, na.rm = T), 
+                              mean_PO = mean(PO_composite, na.rm = T), 
+                              mean_Finov = mean(Finov_composite, na.rm = T), 
+                              mean_CEOov = mean(CEOov_composite, na.rm = T), 
+                              mean_Brdstr = mean(Brdstr_composite, na.rm = T), 
+                              mean_meet = mean(Meet_composite, na.rm = T), 
+                              mean_culture = mean(Culture_composite, na.rm = T), 
+                              mean_impact = mean(Impact_composite, na.rm = T))
+df_group_summary
+# n_distinct(performance_rBSA$Org_Name)  
+df_group_summary$survey_year3 <- as.factor(df_group_summary$survey_year3)
+
+
+boxplot_by_year <- function(z, label1) {
+  x <- df_group_summary$survey_year3
+  y <- z
+  plot1 <- ggplot(df_group_summary, 
+                aes(x,y, fill = survey_year3))+
+          geom_boxplot(alpha = 0.2) +
+          geom_jitter(color = "black") + 
+          scale_fill_brewer(palette = "Dark2")+
+    labs(x = "Survey Year", y = label1) 
+    
+  plot1
+}
+
+par(mfrow = c(2,2))
+boxplot_by_year(df_group_summary$mean_mi_st, "Mission and Strategy")
+boxplot_by_year(df_group_summary$mean_pi_fund, "Public Image")
+boxplot_by_year(df_group_summary$mean_BC, "Borad Composition")
+boxplot_by_year(df_group_summary$mean_PO, "Program Oversight")
+
+par(mfrow = c(2,2))
+boxplot_by_year(df_group_summary$mean_Finov, "Financial Oversight")
+boxplot_by_year(df_group_summary$mean_CEOov, "CEO Oversight")
+boxplot_by_year(df_group_summary$mean_Brdstr, "Borad Structure")
+boxplot_by_year(df_group_summary$mean_meet, "Meetings")
+
+par(mfrow = c(2,2))
+boxplot_by_year(df_group_summary$mean_culture, "Culture")
+boxplot_by_year(df_group_summary$mean_impact, "Impact")
+
+##The year-over-year performance averages don't suggest meaningful differences over-time. 
+```
+
+
+```{r Tracking specific items over time}
+##Restrict revised BSA to just CEOs and select columns. 
+library(wesanderson)
+Orgd_rBSA <- revised_BSA3%>%
+  mutate(Org_Name = toupper(Org_Name))%>%
+  mutate(chiefexec = case_when(
+    Role == 'Executive Director' ~ 1, 
+    Role == 'Chief Executive Officer' ~ 1, 
+    Role == 'CEO' ~ 1, 
+    TRUE ~ 0
+  ))%>%
+  filter(chiefexec == 1)%>%
+  select(IPAddress, Org_Name, survey_year3, CLP_G.9:CLP_G.19)
+
+
+##Budget over time (G13) [factor]
+
+Orgd_rBSA$CLP_G.13 <- as.factor(Orgd_rBSA$CLP_G.13)
+Orgd_rBSA$survey_year3 <- as.factor(Orgd_rBSA$survey_year3) 
+ 
+ggplot(Orgd_rBSA, 
+          aes(x = survey_year3, y = CLP_G.13, color = survey_year3))+
+          geom_point() +
+          geom_jitter() +
+          scale_fill_manual(values = wes_palette("BottleRocket2")) +
+  geom_count()
+          
+
+##Number of FTE employees over time (G15)
+orgd_rBSA_annual <- Orgd_rBSA%>%group_by(survey_year3)
+
+orgd_summary <- summarise(orgd_rBSA_annual, 
+                          count = n(), 
+                          Avg_FTE = mean(CLP_G.15, na.rm = T), 
+                          median_FTE = median(CLP_G.15, na.rm = T),
+                          nonresponse_FTE = sum(is.na(orgd_rBSA_annual$CLP_G.15)),
+                          nonresponse_tenure = sum(is.na(orgd_rBSA_annual$CLP_G.14)),
+                          Avg.Tenure = mean(CLP_G.14, na.rm = T), 
+                          Med.Tenure = median(CLP_G.14, na.rm = T))
+orgd_summary
+##Number of FTE employees and length of tenure fluctuates wildly. Don't know what to make of the summary here. 
+
+
+##Downsized (G16, choice 5)
+
+orgd_dsize <- summarise(orgd_rBSA_annual, 
+                        count = n(), 
+                        No._downsized = sum(CLP_G.16_5 == 1, na.rm = T), 
+                        percent = (sum(CLP_G.16_5 == 1, na.rm = T)) / n() * 100)
+
+orgd_dsize
+
+##Some difference in prop. of organizations reporting having downsized. Will need to evaluate if differences are meaningful. [Need to remove multiple responses from some orgs]
+
+
+```
+
 
